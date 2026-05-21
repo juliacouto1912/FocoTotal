@@ -1,58 +1,98 @@
-import { useState, useEffect, useRef } from 'react';
-import { Play, Pause, RotateCcw, Clock } from 'lucide-react';
+import { useState, useEffect, useMemo, useRef } from 'react';
+import { Play, Pause, RotateCcw, Clock, Coffee, Focus, SkipForward } from 'lucide-react';
 import confetti from 'canvas-confetti';
 
 interface TimerProps {
   onComplete?: () => void;
 }
 
+type TimerMode = 'focus' | 'shortBreak' | 'longBreak';
+
+type AudioWindow = Window & {
+  webkitAudioContext?: typeof globalThis.AudioContext;
+};
+
 interface Session {
   duration: number;
   completedAt: string;
+  mode: TimerMode;
+}
+
+const STORAGE_KEY = 'focototal-sessions';
+
+const modeConfig: Record<TimerMode, { label: string; minutes: number; description: string }> = {
+  focus: {
+    label: 'Foco',
+    minutes: 25,
+    description: 'Sessão principal para estudar sem interrupções.',
+  },
+  shortBreak: {
+    label: 'Pausa curta',
+    minutes: 5,
+    description: 'Respire, alongue e volte sem perder o ritmo.',
+  },
+  longBreak: {
+    label: 'Pausa longa',
+    minutes: 15,
+    description: 'Recarregue depois de quatro sessões de foco.',
+  },
+};
+
+function loadSessions(): Session[] {
+  if (typeof window === 'undefined') return [];
+
+  try {
+    const saved = localStorage.getItem(STORAGE_KEY);
+    if (!saved) return [];
+    const parsed = JSON.parse(saved);
+    if (!Array.isArray(parsed)) return [];
+
+    return parsed
+      .filter((session) => (
+        session &&
+        typeof session.duration === 'number' &&
+        typeof session.completedAt === 'string'
+      ))
+      .map((session) => ({
+        duration: session.duration,
+        completedAt: session.completedAt,
+        mode: session.mode === 'shortBreak' || session.mode === 'longBreak' ? session.mode : 'focus',
+      }))
+      .slice(0, 20);
+  } catch {
+    return [];
+  }
 }
 
 export function Timer({ onComplete }: TimerProps) {
-  const [selectedTime, setSelectedTime] = useState(25);
-  const [timeLeft, setTimeLeft] = useState(25 * 60);
+  const [mode, setMode] = useState<TimerMode>('focus');
+  const [focusCycles, setFocusCycles] = useState(0);
+  const [timeLeft, setTimeLeft] = useState(modeConfig.focus.minutes * 60);
   const [isRunning, setIsRunning] = useState(false);
-  const [sessions, setSessions] = useState<Session[]>(() => {
-    if (typeof window !== 'undefined') {
-      const saved = localStorage.getItem('focototal-sessions');
-      return saved ? JSON.parse(saved) : [];
-    }
-    return [];
-  });
+  const [sessions, setSessions] = useState<Session[]>(loadSessions);
   const intervalRef = useRef<number | null>(null);
 
-  // Salvar sessões no localStorage
+  const currentMode = modeConfig[mode];
+  const totalSeconds = currentMode.minutes * 60;
+
   useEffect(() => {
     if (typeof window !== 'undefined') {
-      localStorage.setItem('focototal-sessions', JSON.stringify(sessions));
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(sessions));
     }
   }, [sessions]);
 
-  // Solicitar permissão para notificações
   useEffect(() => {
-    if (typeof window !== 'undefined' && 'Notification' in window) {
-      if (Notification.permission === 'default') {
-        Notification.requestPermission();
-      }
+    if (typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'default') {
+      Notification.requestPermission();
     }
   }, []);
 
-  // Atualizar título da página quando cronômetro estiver rodando
   useEffect(() => {
-    if (isRunning) {
-      const interval = window.setInterval(() => {
-        document.title = `${formatTime(timeLeft)} - Cronômetro - FocoTotal`;
-      }, 1000);
-      return () => window.clearInterval(interval);
-    } else {
-      document.title = 'Cronômetro - FocoTotal';
-    }
-  }, [isRunning, timeLeft]);
+    document.title = isRunning
+      ? `${formatTime(timeLeft)} - ${currentMode.label} - FocoTotal`
+      : `${currentMode.label} - FocoTotal`;
+  }, [currentMode.label, isRunning, timeLeft]);
 
-  // Prevenir saída acidental quando cronômetro estiver rodando
   useEffect(() => {
     const handleBeforeUnload = (e: BeforeUnloadEvent) => {
       if (isRunning) {
@@ -65,71 +105,41 @@ export function Timer({ onComplete }: TimerProps) {
     return () => window.removeEventListener('beforeunload', handleBeforeUnload);
   }, [isRunning]);
 
-  // Atalhos de teclado
   useEffect(() => {
     const handleKeyPress = (e: KeyboardEvent) => {
-      // Espaço para iniciar/pausar
       if (e.code === 'Space' && e.target === document.body) {
         e.preventDefault();
         toggleTimer();
       }
-      // R para resetar
       if (e.code === 'KeyR' && e.target === document.body) {
         e.preventDefault();
         resetTimer();
+      }
+      if (e.code === 'KeyN' && e.target === document.body) {
+        e.preventDefault();
+        skipToNextMode();
       }
     };
 
     window.addEventListener('keydown', handleKeyPress);
     return () => window.removeEventListener('keydown', handleKeyPress);
-  }, [isRunning, timeLeft, selectedTime]);
-
-  const timeOptions = [
-    { label: '15 min', value: 15 },
-    { label: '25 min', value: 25 },
-    { label: '45 min', value: 45 },
-    { label: '1 hora', value: 60 },
-  ];
+  }, [isRunning, mode, timeLeft]);
 
   useEffect(() => {
-    if (isRunning && timeLeft > 0) {
-      intervalRef.current = window.setInterval(() => {
-        setTimeLeft((prevTime) => {
-          if (prevTime <= 1) {
-            setIsRunning(false);
-            if (intervalRef.current) {
-              window.clearInterval(intervalRef.current);
-              intervalRef.current = null;
-            }
-            // Adicionar sessão completada
-            const newSession: Session = {
-              duration: selectedTime,
-              completedAt: new Date().toISOString()
-            };
-            setSessions(prev => [newSession, ...prev].slice(0, 10));
-
-            // Tocar som de notificação (beep básico)
-            playNotificationSound();
-
-            // Celebração com confete
-            confetti({
-              particleCount: 100,
-              spread: 70,
-              origin: { y: 0.6 }
-            });
-
-            if (onComplete) {
-              onComplete();
-            }
-            return 0;
-          }
-          return prevTime - 1;
-        });
-      }, 1000);
-    } else if (!isRunning && intervalRef.current) {
-      window.clearInterval(intervalRef.current);
-      intervalRef.current = null;
+    if (!isRunning || timeLeft <= 0) {
+      return;
     }
+
+    intervalRef.current = window.setInterval(() => {
+      setTimeLeft((prevTime) => {
+        if (prevTime <= 1) {
+          completeCurrentSession();
+          return 0;
+        }
+
+        return prevTime - 1;
+      });
+    }, 1000);
 
     return () => {
       if (intervalRef.current) {
@@ -137,63 +147,107 @@ export function Timer({ onComplete }: TimerProps) {
         intervalRef.current = null;
       }
     };
-  }, [isRunning, onComplete, selectedTime]);
+  }, [isRunning, timeLeft, mode]);
 
-  const playNotificationSound = () => {
-    // Criar um beep simples usando Web Audio API
-    try {
-      const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
-      const oscillator = audioContext.createOscillator();
-      const gainNode = audioContext.createGain();
+  const todayFocusMinutes = useMemo(() => {
+    const today = new Date().toDateString();
+    return sessions
+      .filter((session) => new Date(session.completedAt).toDateString() === today)
+      .reduce((total, session) => total + session.duration, 0);
+  }, [sessions]);
 
-      oscillator.connect(gainNode);
-      gainNode.connect(audioContext.destination);
+  const totalStudyTime = sessions.reduce((acc, session) => acc + session.duration, 0);
+  const progress = ((totalSeconds - timeLeft) / totalSeconds) * 100;
 
-      oscillator.frequency.value = 800;
-      oscillator.type = 'sine';
-
-      gainNode.gain.setValueAtTime(0.3, audioContext.currentTime);
-      gainNode.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + 0.5);
-
-      oscillator.start(audioContext.currentTime);
-      oscillator.stop(audioContext.currentTime + 0.5);
-    } catch (error) {
-      console.log('Não foi possível reproduzir o som');
-    }
-
-    // Mostrar notificação do navegador
-    if (typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'granted') {
-      new Notification('FocoTotal - Sessão Concluída!', {
-        body: `Parabéns! Você completou ${selectedTime} minutos de estudo focado.`,
-        icon: '/favicon.ico',
-        tag: 'focototal-timer'
-      });
-    }
+  const switchMode = (nextMode: TimerMode) => {
+    setMode(nextMode);
+    setTimeLeft(modeConfig[nextMode].minutes * 60);
+    setIsRunning(false);
   };
 
-  useEffect(() => {
-    if (timeLeft === 0 && intervalRef.current) {
-      window.clearInterval(intervalRef.current);
-      intervalRef.current = null;
-      setIsRunning(false);
-    }
-  }, [timeLeft]);
+  const getNextMode = (completedMode: TimerMode, nextFocusCycles = focusCycles) => {
+    if (completedMode !== 'focus') return 'focus';
+    return nextFocusCycles > 0 && nextFocusCycles % 4 === 0 ? 'longBreak' : 'shortBreak';
+  };
 
-  const handleTimeSelect = (minutes: number) => {
+  const completeCurrentSession = () => {
     if (intervalRef.current) {
       window.clearInterval(intervalRef.current);
       intervalRef.current = null;
     }
-    setSelectedTime(minutes);
-    setTimeLeft(minutes * 60);
+
     setIsRunning(false);
+
+    const nextFocusCycles = mode === 'focus' ? focusCycles + 1 : focusCycles;
+    if (mode === 'focus') {
+      setFocusCycles(nextFocusCycles);
+    }
+
+    const newSession: Session = {
+      duration: currentMode.minutes,
+      completedAt: new Date().toISOString(),
+      mode,
+    };
+    setSessions((prev) => [newSession, ...prev].slice(0, 20));
+    playNotificationSound(mode);
+    celebrate(mode);
+
+    const nextMode = getNextMode(mode, nextFocusCycles);
+    setMode(nextMode);
+    setTimeLeft(modeConfig[nextMode].minutes * 60);
+
+    if (onComplete) {
+      onComplete();
+    }
+  };
+
+  const playNotificationSound = (completedMode: TimerMode) => {
+    try {
+      const audioWindow = window as AudioWindow;
+      const AudioContextClass = globalThis.AudioContext || audioWindow.webkitAudioContext;
+      if (AudioContextClass) {
+        const audioContext = new AudioContextClass();
+        const oscillator = audioContext.createOscillator();
+        const gainNode = audioContext.createGain();
+
+        oscillator.connect(gainNode);
+        gainNode.connect(audioContext.destination);
+        oscillator.frequency.value = completedMode === 'focus' ? 880 : 660;
+        oscillator.type = 'sine';
+        gainNode.gain.setValueAtTime(0.25, audioContext.currentTime);
+        gainNode.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + 0.45);
+        oscillator.start(audioContext.currentTime);
+        oscillator.stop(audioContext.currentTime + 0.45);
+      }
+    } catch {
+      // Audio can fail when the browser blocks sound before user interaction.
+    }
+
+    if (typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'granted') {
+      new Notification('FocoTotal', {
+        body: mode === 'focus' ? 'Sessão de foco concluída. Hora de pausar.' : 'Pausa concluída. Vamos voltar ao foco.',
+        icon: '/favicon.ico',
+        tag: 'focototal-timer',
+      });
+    }
+  };
+
+  const celebrate = (completedMode: TimerMode) => {
+    if (completedMode !== 'focus') return;
+
+    confetti({
+      particleCount: 90,
+      spread: 70,
+      origin: { y: 0.6 },
+      colors: ['#0ea5e9', '#06b6d4', '#14b8a6'],
+    });
   };
 
   const toggleTimer = () => {
     if (timeLeft === 0) {
-      setTimeLeft(selectedTime * 60);
+      setTimeLeft(totalSeconds);
     }
-    setIsRunning(!isRunning);
+    setIsRunning((current) => !current);
   };
 
   const resetTimer = () => {
@@ -202,7 +256,12 @@ export function Timer({ onComplete }: TimerProps) {
       intervalRef.current = null;
     }
     setIsRunning(false);
-    setTimeLeft(selectedTime * 60);
+    setTimeLeft(totalSeconds);
+  };
+
+  const skipToNextMode = () => {
+    const nextMode = getNextMode(mode);
+    switchMode(nextMode);
   };
 
   const formatTime = (seconds: number) => {
@@ -217,154 +276,154 @@ export function Timer({ onComplete }: TimerProps) {
       day: '2-digit',
       month: '2-digit',
       hour: '2-digit',
-      minute: '2-digit'
+      minute: '2-digit',
     });
   };
 
-  const progress = ((selectedTime * 60 - timeLeft) / (selectedTime * 60)) * 100;
-  const totalStudyTime = sessions.reduce((acc, session) => acc + session.duration, 0);
-
   return (
-    <div className="flex flex-col items-center gap-8 w-full max-w-md mx-auto">
-      <div className="flex gap-2 flex-wrap justify-center">
-        {timeOptions.map((option) => (
-          <button
-            key={option.value}
-            onClick={() => handleTimeSelect(option.value)}
-            disabled={isRunning}
-            className={`px-5 py-2.5 rounded-lg transition-all font-medium ${
-              selectedTime === option.value
-                ? 'bg-primary text-white shadow-lg shadow-primary/50'
-                : 'bg-secondary text-foreground hover:bg-secondary/80 border border-border'
-            } ${isRunning ? 'opacity-50 cursor-not-allowed' : ''}`}
-          >
-            {option.label}
-          </button>
-        ))}
-      </div>
+    <div className="w-full max-w-5xl mx-auto grid grid-cols-1 lg:grid-cols-[1fr_0.85fr] gap-6 items-start">
+      <div className="bg-card border border-border rounded-lg p-6 sm:p-8">
+        <div className="flex flex-wrap gap-2 mb-8">
+          {(['focus', 'shortBreak', 'longBreak'] as TimerMode[]).map((timerMode) => {
+            const Icon = timerMode === 'focus' ? Focus : Coffee;
 
-      <div className="relative w-64 h-64 flex items-center justify-center">
-        <svg className="absolute inset-0 w-full h-full -rotate-90">
-          <circle
-            cx="128"
-            cy="128"
-            r="112"
-            stroke="currentColor"
-            strokeWidth="8"
-            fill="none"
-            className="text-muted"
-          />
-          <circle
-            cx="128"
-            cy="128"
-            r="112"
-            stroke="currentColor"
-            strokeWidth="8"
-            fill="none"
-            strokeDasharray={`${2 * Math.PI * 112}`}
-            strokeDashoffset={`${2 * Math.PI * 112 * (1 - progress / 100)}`}
-            className="text-primary transition-all duration-300"
-            strokeLinecap="round"
-          />
-        </svg>
-        <div className="text-5xl font-bold text-foreground">{formatTime(timeLeft)}</div>
-      </div>
-
-      <div className="flex gap-4">
-        <button
-          onClick={toggleTimer}
-          className="flex items-center gap-2 px-8 py-3.5 bg-primary text-white rounded-lg hover:opacity-90 transition-all shadow-lg shadow-primary/50 font-medium"
-        >
-          {isRunning ? (
-            <>
-              <Pause size={22} />
-              Pausar
-            </>
-          ) : (
-            <>
-              <Play size={22} />
-              {timeLeft === 0 ? 'Reiniciar' : 'Iniciar'}
-            </>
-          )}
-        </button>
-        <button
-          onClick={resetTimer}
-          className="flex items-center gap-2 px-8 py-3.5 bg-secondary text-foreground rounded-lg hover:bg-secondary/80 transition-all border border-border font-medium"
-        >
-          <RotateCcw size={22} />
-          Resetar
-        </button>
-      </div>
-
-      {timeLeft === 0 && (
-        <div className="text-center">
-          <div className="inline-flex items-center gap-2 px-4 py-2 bg-primary/10 border border-primary/20 rounded-lg">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-primary">
-              <polyline points="20 6 9 17 4 12"/>
-            </svg>
-            <p className="text-primary font-medium">Tempo concluído</p>
-          </div>
-          <p className="text-sm text-muted-foreground mt-3">Ótimo trabalho! Faça uma pausa.</p>
-        </div>
-      )}
-
-      <div className="w-full max-w-md mx-auto mt-8">
-        <div className="bg-secondary/50 border border-border rounded-lg p-4 mb-4">
-          <p className="text-sm text-muted-foreground text-center mb-2">
-            <span className="font-medium text-foreground">Atalhos:</span>
-          </p>
-          <div className="flex gap-4 justify-center text-xs text-muted-foreground">
-            <span className="flex items-center gap-1">
-              <kbd className="px-2 py-1 bg-card border border-border rounded">Espaço</kbd>
-              Iniciar/Pausar
-            </span>
-            <span className="flex items-center gap-1">
-              <kbd className="px-2 py-1 bg-card border border-border rounded">R</kbd>
-              Resetar
-            </span>
-          </div>
-        </div>
-      </div>
-
-      {sessions.length > 0 && (
-        <div className="w-full max-w-md mx-auto bg-card border border-border rounded-lg p-6">
-          <div className="flex items-center justify-between mb-4">
-            <h3 className="font-semibold flex items-center gap-2">
-              <Clock size={18} className="text-primary" />
-              Histórico de Sessões
-            </h3>
-            <div className="text-sm text-muted-foreground">
-              {sessions.length} sessão{sessions.length !== 1 ? 'ões' : ''}
-            </div>
-          </div>
-
-          <div className="mb-4 p-3 bg-primary/10 border border-primary/20 rounded-lg text-center">
-            <div className="text-2xl font-bold text-primary">
-              {totalStudyTime} min
-            </div>
-            <div className="text-xs text-muted-foreground mt-1">
-              Tempo total de estudo
-            </div>
-          </div>
-
-          <div className="space-y-2 max-h-48 overflow-y-auto">
-            {sessions.map((session, index) => (
-              <div
-                key={index}
-                className="flex items-center justify-between p-2 bg-secondary rounded-md"
+            return (
+              <button
+                key={timerMode}
+                onClick={() => switchMode(timerMode)}
+                disabled={isRunning}
+                className={`flex items-center gap-2 px-4 py-2.5 rounded-lg transition-all font-medium ${
+                  mode === timerMode
+                    ? 'bg-primary text-white shadow-lg shadow-primary/40'
+                    : 'bg-secondary text-foreground hover:bg-secondary/80 border border-border'
+                } ${isRunning ? 'opacity-50 cursor-not-allowed' : ''}`}
               >
-                <div className="flex items-center gap-2">
-                  <div className="w-2 h-2 bg-primary rounded-full"></div>
-                  <span className="text-sm font-medium">{session.duration} minutos</span>
-                </div>
-                <span className="text-xs text-muted-foreground">
-                  {formatSessionTime(session.completedAt)}
-                </span>
-              </div>
-            ))}
+                <Icon size={18} />
+                {modeConfig[timerMode].label}
+              </button>
+            );
+          })}
+        </div>
+
+        <div className="text-center mb-8">
+          <p className="text-sm text-muted-foreground mb-2">{currentMode.description}</p>
+          <div className="relative w-64 h-64 sm:w-72 sm:h-72 mx-auto flex items-center justify-center">
+            <svg className="absolute inset-0 w-full h-full -rotate-90" viewBox="0 0 288 288">
+              <circle
+                cx="144"
+                cy="144"
+                r="124"
+                stroke="currentColor"
+                strokeWidth="10"
+                fill="none"
+                className="text-muted"
+              />
+              <circle
+                cx="144"
+                cy="144"
+                r="124"
+                stroke="currentColor"
+                strokeWidth="10"
+                fill="none"
+                strokeDasharray={`${2 * Math.PI * 124}`}
+                strokeDashoffset={`${2 * Math.PI * 124 * (1 - progress / 100)}`}
+                className="text-primary transition-all duration-300"
+                strokeLinecap="round"
+              />
+            </svg>
+            <div>
+              <div className="text-5xl sm:text-6xl font-bold text-foreground">{formatTime(timeLeft)}</div>
+              <div className="text-sm text-muted-foreground mt-3">{currentMode.label}</div>
+            </div>
           </div>
         </div>
-      )}
+
+        <div className="flex flex-col sm:flex-row gap-3 justify-center">
+          <button
+            onClick={toggleTimer}
+            className="flex items-center justify-center gap-2 px-8 py-3.5 bg-primary text-white rounded-lg hover:opacity-90 transition-all shadow-lg shadow-primary/50 font-medium"
+          >
+            {isRunning ? <Pause size={22} /> : <Play size={22} />}
+            {isRunning ? 'Pausar' : timeLeft === 0 ? 'Reiniciar' : 'Iniciar'}
+          </button>
+          <button
+            onClick={resetTimer}
+            className="flex items-center justify-center gap-2 px-8 py-3.5 bg-secondary text-foreground rounded-lg hover:bg-secondary/80 transition-all border border-border font-medium"
+          >
+            <RotateCcw size={22} />
+            Resetar
+          </button>
+          <button
+            onClick={skipToNextMode}
+            className="flex items-center justify-center gap-2 px-8 py-3.5 bg-secondary text-foreground rounded-lg hover:bg-secondary/80 transition-all border border-border font-medium"
+          >
+            <SkipForward size={22} />
+            Próximo
+          </button>
+        </div>
+      </div>
+
+      <div className="space-y-6">
+        <div className="bg-card border border-border rounded-lg p-6">
+          <h3 className="font-semibold flex items-center gap-2 mb-4">
+            <Clock size={18} className="text-primary" />
+            Resumo
+          </h3>
+          <div className="grid grid-cols-3 gap-3 text-center">
+            <div className="bg-secondary/60 border border-border rounded-lg p-3">
+              <div className="text-2xl font-bold text-primary">{focusCycles}</div>
+              <div className="text-xs text-muted-foreground mt-1">ciclos</div>
+            </div>
+            <div className="bg-secondary/60 border border-border rounded-lg p-3">
+              <div className="text-2xl font-bold">{todayFocusMinutes}</div>
+              <div className="text-xs text-muted-foreground mt-1">min hoje</div>
+            </div>
+            <div className="bg-secondary/60 border border-border rounded-lg p-3">
+              <div className="text-2xl font-bold">{totalStudyTime}</div>
+              <div className="text-xs text-muted-foreground mt-1">min totais</div>
+            </div>
+          </div>
+
+          <div className="bg-secondary/50 border border-border rounded-lg p-4 mt-4">
+            <div className="flex flex-wrap gap-4 justify-center text-xs text-muted-foreground">
+              <span><kbd className="px-2 py-1 bg-card border border-border rounded">Espaço</kbd> iniciar/pausar</span>
+              <span><kbd className="px-2 py-1 bg-card border border-border rounded">R</kbd> resetar</span>
+              <span><kbd className="px-2 py-1 bg-card border border-border rounded">N</kbd> próximo</span>
+            </div>
+          </div>
+        </div>
+
+        {sessions.length > 0 && (
+          <div className="bg-card border border-border rounded-lg p-6">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="font-semibold flex items-center gap-2">
+                <Clock size={18} className="text-primary" />
+                Histórico
+              </h3>
+              <div className="text-sm text-muted-foreground">
+                {sessions.length} sessão{sessions.length !== 1 ? 'ões' : ''}
+              </div>
+            </div>
+
+            <div className="space-y-2 max-h-80 overflow-y-auto">
+              {sessions.map((session, index) => (
+                <div
+                  key={`${session.completedAt}-${index}`}
+                  className="flex items-center justify-between p-3 bg-secondary rounded-md"
+                >
+                  <div>
+                    <div className="text-sm font-medium">{modeConfig[session.mode].label}</div>
+                    <div className="text-xs text-muted-foreground">{session.duration} minutos</div>
+                  </div>
+                  <span className="text-xs text-muted-foreground">
+                    {formatSessionTime(session.completedAt)}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
