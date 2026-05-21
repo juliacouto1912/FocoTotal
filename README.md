@@ -1,13 +1,14 @@
+
 # FocoTotal
 
-Aplicacao web em React para ajudar estudantes a reduzir a procrastinacao com cronometro Pomodoro, lista de tarefas e mensagens motivacionais.
+Aplicação web em React para ajudar estudantes a reduzir a procrastinação com cronômetro Pomodoro, lista de tarefas e mensagens motivacionais.
 
-O projeto original esta disponivel no Figma:
+O projeto original está disponível no Figma:
 https://www.figma.com/design/YqLz9uJ43sfx4mqx6wmWeS/Anti-Procrastination-Website
 
 ## Requisitos
 
-Instale Node.js e pnpm antes de rodar o projeto. Este repositorio usa pnpm como gerenciador de pacotes.
+Instale Node.js e pnpm antes de rodar o projeto. Este repositório usa pnpm como gerenciador de pacotes.
 
 ## Como rodar
 
@@ -16,7 +17,7 @@ pnpm install
 pnpm run dev
 ```
 
-## Validacao
+## Validação
 
 ```bash
 pnpm run typecheck
@@ -25,7 +26,7 @@ pnpm run build
 
 ## Git
 
-Antes do primeiro commit, configure o usuario correto nesta maquina:
+Antes do primeiro commit, configure o usuário correto nesta máquina:
 
 ```bash
 git config --global user.name "Seu Nome"
